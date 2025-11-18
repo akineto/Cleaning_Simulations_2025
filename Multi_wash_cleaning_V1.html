@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Detergent Multi-Wash Cleaning Model</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    max-width: 1100px;
+  }
+  h1, h2 {
+    margin-bottom: 0.2em;
+  }
+  .panel {
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+  }
+  .panel-title {
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  .controls-grid {
+    display: grid;
+    grid-template-columns: 260px 200px 120px;
+    gap: 6px 12px;
+    align-items: center;
+    margin-bottom: 5px;
+  }
+  label {
+    font-size: 0.9rem;
+  }
+  input[type="number"] {
+    width: 100%;
+  }
+  canvas {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fafafa;
+  }
+  .summary-table {
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .summary-table td {
+    padding: 2px 6px;
+  }
+  .summary-table td:first-child {
+    font-weight: bold;
+  }
+  .legend-box {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<h1>Detergent Multi-Wash Cleaning Model (HTML/JS version)</h1>
+
+<div class="panel">
+  <div class="panel-title">Residue & Kinetics</div>
+  <div class="controls-grid">
+    <label for="MS0">M<sub>S0</sub> (initial residue, mg)</label>
+    <input id="MS0" type="number" step="0.000001" value="1.0" min="1e-9" max="100">
+    <div></div>
+
+    <label for="MSt">M<sub>S*</sub> (target residue, mg)</label>
+    <input id="MSt" type="number" step="0.000001" value="0.001" min="1e-12" max="1">
+    <div></div>
+
+    <label for="CD">C<sub>D</sub> (detergent conc., g/L)</label>
+    <input id="CD" type="number" step="0.1" value="5.0" min="0" max="50">
+    <div></div>
+
+    <label for="k0">k<sub>0</sub> (baseline, 1/s)</label>
+    <input id="k0" type="number" step="1e-5" value="0.0003" min="1e-6" max="0.01">
+    <div></div>
+
+    <label for="k1">k<sub>1</sub> (detergent efficacy, 1/(s·(g/L)<sup>m</sup>))</label>
+    <input id="k1" type="number" step="1e-5" value="0.0006" min="1e-6" max="0.01">
+    <div></div>
+
+    <label for="mOrder">m (order in C<sub>D</sub>)</label>
+    <input id="mOrder" type="number" step="0.1" value="1.0" min="0.1" max="3">
+    <div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Wash Cycles & Water Accounting</div>
+  <div class="controls-grid">
+    <label for="tWash">t<sub>wash</sub> per cycle (seconds)</label>
+    <input id="tWash" type="number" step="10" value="600" min="10" max="7200">
+    <div></div>
+
+    <label for="Nmax">N<sub>max</sub> (max washes for plots)</label>
+    <input id="Nmax" type="number" step="1" value="10" min="1" max="100">
+    <div></div>
+
+    <label for="Nw">N<sub>w</sub> (number of washes actually applied)</label>
+    <input id="Nw" type="number" step="1" value="5" min="1" max="100">
+    <div></div>
+
+    <label for="Vvessel">V<sub>vessel</sub> (mL)</label>
+    <input id="Vvessel" type="number" step="10" value="250" min="1" max="10000">
+    <div></div>
+
+    <label for="Vwash">V<sub>wash</sub> per cycle (mL)</label>
+    <input id="Vwash" type="number" step="10" value="200" min="1" max="10000">
+    <div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Computed Summary</div>
+  <table class="summary-table">
+    <tr><td>k<sub>eff</sub> (1/s)</td><td id="keffOut"></td></tr>
+    <tr><td>Raw N<sub>req</sub> (washes to reach M<sub>S*</sub>)</td><td id="nReqRawOut"></td></tr>
+    <tr><td>N<sub>req</sub> (integer)</td><td id="nReqOut"></td></tr>
+    <tr><td>Total time (N<sub>w</sub> · t<sub>wash</sub>) [s]</td><td id="totalTimeOut"></td></tr>
+    <tr><td>Total water (N<sub>w</sub> · V<sub>wash</sub>) [mL]</td><td id="totalWaterOut"></td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="panel-title">
+    Residue vs Wash Number
+    &nbsp;&nbsp;
+    <span class="legend-box" style="background:#0000aa;"></span>M<sub>S</sub>(n)
+    &nbsp;&nbsp;
+    <span class="legend-box" style="background:#aa0000;"></span>M<sub>S*</sub> (target)
+    &nbsp;&nbsp;
+    <span class="legend-box" style="background:#008000;"></span>N<sub>req</sub> (vertical line)
+  </div>
+  <canvas id="washCanvas" width="500" height="300"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">
+    Residue vs Time (equivalent continuous exposure)
+    &nbsp;&nbsp;
+    <span class="legend-box" style="background:#0000aa;"></span>M<sub>S</sub>(t)
+    &nbsp;&nbsp;
+    <span class="legend-box" style="background:#aa0000;"></span>M<sub>S*</sub> (target)
+  </div>
+  <canvas id="timeCanvas" width="500" height="300"></canvas>
+</div>
+
+<script>
+// ---------- Core model functions in JavaScript ----------
+
+function kEff(CD, k0, k1, m) {
+  return k0 + k1 * Math.pow(CD, m);
+}
+
+function residueAfterNWashes(MS0, ke, tWash, n) {
+  return MS0 * Math.exp(-ke * tWash * n);
+}
+
+function residueAtTime(MS0, ke, t) {
+  return MS0 * Math.exp(-ke * t);
+}
+
+// Helper: get numeric value safely
+function val(id) {
+  return parseFloat(document.getElementById(id).value);
+}
+
+// ---------- Plotting helpers ----------
+
+function clearCanvas(ctx, canvas) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// Draw axes and return coordinate transform
+function drawAxes(ctx, canvas, xMin, xMax, yMin, yMax, xLabel, yLabel) {
+  const paddingLeft = 50;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 40;
+
+  const plotWidth = canvas.width - paddingLeft - paddingRight;
+  const plotHeight = canvas.height - paddingTop - paddingBottom;
+
+  // Axes
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  // X axis
+  ctx.moveTo(paddingLeft, canvas.height - paddingBottom);
+  ctx.lineTo(canvas.width - paddingRight, canvas.height - paddingBottom);
+  // Y axis
+  ctx.moveTo(paddingLeft, canvas.height - paddingBottom);
+  ctx.lineTo(paddingLeft, paddingTop);
+  ctx.stroke();
+
+  // Labels
+  ctx.font = "12px Arial";
+  ctx.fillStyle = "#000";
+  ctx.textAlign = "center";
+  ctx.fillText(xLabel, paddingLeft + plotWidth / 2, canvas.height - 10);
+
+  ctx.save();
+  ctx.translate(15, paddingTop + plotHeight / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+
+  // Tick marks (simple)
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  const xTicks = 5;
+  for (let i = 0; i <= xTicks; i++) {
+    const xVal = xMin + (i / xTicks) * (xMax - xMin);
+    const xPix = paddingLeft + (i / xTicks) * plotWidth;
+    ctx.beginPath();
+    ctx.moveTo(xPix, canvas.height - paddingBottom);
+    ctx.lineTo(xPix, canvas.height - paddingBottom + 5);
+    ctx.stroke();
+    ctx.fillText(xVal.toFixed(0), xPix, canvas.height - paddingBottom + 8);
+  }
+
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const yVal = yMin + (i / yTicks) * (yMax - yMin);
+    const yPix = canvas.height - paddingBottom - (i / yTicks) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft - 5, yPix);
+    ctx.lineTo(paddingLeft, yPix);
+    ctx.stroke();
+    ctx.fillText(yVal.toPrecision(3), paddingLeft - 8, yPix);
+  }
+
+  // Coordinate transform
+  function xToPix(x) {
+    return paddingLeft + ((x - xMin) / (xMax - xMin)) * plotWidth;
+  }
+  function yToPix(y) {
+    return canvas.height - paddingBottom - ((y - yMin) / (yMax - yMin)) * plotHeight;
+  }
+
+  return { xToPix, yToPix, paddingLeft, paddingRight, paddingTop, paddingBottom };
+}
+
+// ---------- Main recompute & redraw ----------
+
+function recomputeAndRedraw() {
+  const MS0 = val("MS0");
+  const MSt = val("MSt");
+  const CD = val("CD");
+  const k0 = val("k0");
+  const k1 = val("k1");
+  const m = val("mOrder");
+
+  const tWash = val("tWash");
+  const Nmax = Math.max(1, Math.floor(val("Nmax")));
+  const Nw = Math.max(1, Math.floor(val("Nw")));
+  const Vvessel = val("Vvessel");
+  const Vwash = val("Vwash");
+
+  const ke = kEff(CD, k0, k1, m);
+
+  // Wash index and residue list
+  let nList = [];
+  let msList = [];
+  for (let n = 0; n <= Nmax; n++) {
+    nList.push(n);
+    msList.push(residueAfterNWashes(MS0, ke, tWash, n));
+  }
+
+  // Required number of washes to reach MSt
+  let nReqRaw = NaN;
+  if (MS0 > 0 && MSt > 0 && ke > 0 && tWash > 0) {
+    nReqRaw = Math.log(MS0 / MSt) / (ke * tWash);
+  }
+  let nReq = (isFinite(nReqRaw) && nReqRaw > 0) ? Math.ceil(nReqRaw) : 0;
+
+  const totalTime = Nw * tWash;
+  const totalWater = Nw * Vwash;
+
+  // Update summary outputs
+  document.getElementById("keffOut").textContent = isFinite(ke) ? ke.toExponential(4) : "NaN";
+  document.getElementById("nReqRawOut").textContent = isFinite(nReqRaw) ? nReqRaw.toFixed(3) : "NaN";
+  document.getElementById("nReqOut").textContent = nReq.toString();
+  document.getElementById("totalTimeOut").textContent = totalTime.toFixed(1);
+  document.getElementById("totalWaterOut").textContent = totalWater.toFixed(1);
+
+  // ---------- Plot: Residue vs Wash Number ----------
+  const washCanvas = document.getElementById("washCanvas");
+  const wctx = washCanvas.getContext("2d");
+  clearCanvas(wctx, washCanvas);
+
+  let yMaxNs = Math.max(...msList, MSt);
+  let yMinNs = Math.min(...msList, MSt);
+  if (yMinNs <= 0) yMinNs = yMaxNs / 1000; // keep >0 for log-ish spreads
+  const xMinNs = 0;
+  const xMaxNs = Nmax;
+
+  const axesNs = drawAxes(
+    wctx,
+    washCanvas,
+    xMinNs,
+    xMaxNs,
+    yMinNs,
+    yMaxNs,
+    "Wash number n",
+    "Residue M_S(n) (mg)"
+  );
+
+  // Draw residue vs wash (blue)
+  wctx.beginPath();
+  wctx.strokeStyle = "#0000aa";
+  wctx.lineWidth = 2;
+  for (let i = 0; i < nList.length; i++) {
+    const x = axesNs.xToPix(nList[i]);
+    const y = axesNs.yToPix(msList[i]);
+    if (i === 0) wctx.moveTo(x, y);
+    else wctx.lineTo(x, y);
+  }
+  wctx.stroke();
+
+  // Horizontal line at MSt (red dashed)
+  wctx.setLineDash([6, 4]);
+  wctx.strokeStyle = "#aa0000";
+  wctx.lineWidth = 2;
+  wctx.beginPath();
+  wctx.moveTo(axesNs.xToPix(xMinNs), axesNs.yToPix(MSt));
+  wctx.lineTo(axesNs.xToPix(xMaxNs), axesNs.yToPix(MSt));
+  wctx.stroke();
+  wctx.setLineDash([]);
+
+  // Vertical line at N_req (green dashed)
+  if (isFinite(nReqRaw) && nReq > 0 && nReq <= Nmax) {
+    wctx.setLineDash([6, 4]);
+    wctx.strokeStyle = "#008000";
+    wctx.lineWidth = 2;
+    const xline = axesNs.xToPix(nReq);
+    wctx.beginPath();
+    wctx.moveTo(xline, axesNs.yToPix(yMinNs));
+    wctx.lineTo(xline, axesNs.yToPix(yMaxNs));
+    wctx.stroke();
+    wctx.setLineDash([]);
+  }
+
+  // ---------- Plot: Residue vs Time (continuous) ----------
+  const timeCanvas = document.getElementById("timeCanvas");
+  const tctx = timeCanvas.getContext("2d");
+  clearCanvas(tctx, timeCanvas);
+
+  const tMin = 0;
+  const tMax = Math.max(1, totalTime);
+  const steps = 200;
+  let tList = [];
+  let mtList = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = tMin + (i / steps) * (tMax);
+    tList.push(t);
+    mtList.push(residueAtTime(MS0, ke, t));
+  }
+
+  let yMaxT = Math.max(...mtList, MSt);
+  let yMinT = Math.min(...mtList, MSt);
+  if (yMinT <= 0) yMinT = yMaxT / 1000;
+
+  const axesT = drawAxes(
+    tctx,
+    timeCanvas,
+    tMin,
+    tMax,
+    yMinT,
+    yMaxT,
+    "Time t (s)",
+    "Residue M_S(t) (mg)"
+  );
+
+  // Draw M_S(t) (blue)
+  tctx.beginPath();
+  tctx.strokeStyle = "#0000aa";
+  tctx.lineWidth = 2;
+  for (let i = 0; i < tList.length; i++) {
+    const x = axesT.xToPix(tList[i]);
+    const y = axesT.yToPix(mtList[i]);
+    if (i === 0) tctx.moveTo(x, y);
+    else tctx.lineTo(x, y);
+  }
+  tctx.stroke();
+
+  // Horizontal line at MSt (red dashed)
+  tctx.setLineDash([6, 4]);
+  tctx.strokeStyle = "#aa0000";
+  tctx.lineWidth = 2;
+  tctx.beginPath();
+  tctx.moveTo(axesT.xToPix(tMin), axesT.yToPix(MSt));
+  tctx.lineTo(axesT.xToPix(tMax), axesT.yToPix(MSt));
+  tctx.stroke();
+  tctx.setLineDash([]);
+}
+
+// Attach listeners
+window.addEventListener("load", () => {
+  const ids = [
+    "MS0","MSt","CD","k0","k1","mOrder",
+    "tWash","Nmax","Nw","Vvessel","Vwash"
+  ];
+  ids.forEach(id => {
+    document.getElementById(id).addEventListener("input", recomputeAndRedraw);
+    document.getElementById(id).addEventListener("change", recomputeAndRedraw);
+  });
+  recomputeAndRedraw();
+});
+</script>
+
+</body>
+</html>
