@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cleaning Simulation: Multi-Recipe Wash + Rinse + 2D Map</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #000000;
+    --panel-bg: #f5f5f5;
+    --border: #aaaaaa;
+    --canvas-bg: #fafafa;
+    --accent: #0066cc;
+  }
+  body.dark {
+    --bg: #121212;
+    --fg: #f0f0f0;
+    --panel-bg: #1f1f1f;
+    --border: #555555;
+    --canvas-bg: #222222;
+    --accent: #66aaff;
+  }
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    max-width: 1200px;
+    background-color: var(--bg);
+    color: var(--fg);
+    transition: background-color 0.2s, color 0.2s;
+  }
+  h1 {
+    margin-bottom: 0.3em;
+  }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  button {
+    padding: 4px 10px;
+    margin: 2px;
+    cursor: pointer;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--fg);
+  }
+  button:hover {
+    border-color: var(--accent);
+  }
+  .panel {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+    background-color: var(--panel-bg);
+  }
+  .panel-title {
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  .controls-grid {
+    display: grid;
+    grid-template-columns: 260px 170px 120px;
+    gap: 6px 12px;
+    align-items: center;
+    margin-bottom: 5px;
+  }
+  label {
+    font-size: 0.9rem;
+  }
+  input[type="number"] {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  canvas {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--canvas-bg);
+  }
+  .summary-table, .case-table {
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    width: 100%;
+  }
+  .summary-table td, .case-table td, .case-table th {
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .summary-table td:first-child, .case-table th {
+    font-weight: bold;
+  }
+  .legend-box {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .note {
+    font-size: 0.8rem;
+    opacity: 0.85;
+  }
+
+  /* Map layout */
+  .map-wrapper {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  #colorbarContainer {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    font-size: 11px;
+  }
+  #colorbar {
+    width: 18px;
+    height: 220px;
+    background: linear-gradient(to top, blue, cyan, lime, yellow, orange, red);
+    border: 1px solid var(--border);
+  }
+  #colorbarTicks {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    margin-left: 6px;
+    color: var(--fg);
+  }
+  #colorbarTicks div {
+    white-space: nowrap;
+  }
+  #mapTooltip {
+    position: absolute;
+    display: none;
+    padding: 4px 6px;
+    background-color: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 11px;
+    pointer-events: none;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<h1>Cleaning Simulation: Multi-Recipe Wash + Rinse + 2D Map</h1>
+
+<div class="toolbar">
+  <button id="darkToggle">Toggle Dark Mode</button>
+  <button id="downloadWashBtn">Download PNG (Residue vs Steps)</button>
+  <button id="downloadMapBtn">Download PNG (2D Map)</button>
+  <span class="note">
+    Wash model: M(N) = M<sub>0</sub> · exp[-k<sub>eff</sub>·t<sub>step</sub>·N], 
+    k<sub>eff</sub> = k<sub>0</sub> + k<sub>1</sub>C<sub>D</sub><sup>m</sup>·(V<sub>wash</sub>/V<sub>vessel</sub>)<br>
+    Rinse model: dilution factor ρ = f<sub>h</sub>/(1+f<sub>h</sub>), 
+    M<sub>rinse</sub>(j) = M<sub>wash,end</sub>·ρ<sup>j</sup> 
+    (each recipe has its own N<sub>rinse</sub>, V<sub>rinse</sub>, t<sub>rinse</sub>).
+  </span>
+</div>
+
+<!-- Global kinetics -->
+<div class="panel">
+  <div class="panel-title">Global Kinetics & Contaminant</div>
+  <div class="controls-grid">
+    <label for="MS0">M<sub>0</sub> (initial contaminant mass, mg)</label>
+    <input id="MS0" type="number" step="0.000001" value="1.0" min="1e-9" max="1000">
+    <div></div>
+
+    <label for="k0">k<sub>0</sub> (baseline, 1/s)</label>
+    <input id="k0" type="number" step="1e-5" value="0.0003" min="1e-7" max="0.1">
+    <div></div>
+
+    <label for="k1">k<sub>1</sub> (detergent efficacy, 1/(s·(g/L)<sup>m</sup>))</label>
+    <input id="k1" type="number" step="1e-5" value="0.0006" min="1e-7" max="0.1">
+    <div></div>
+
+    <label for="mOrder">m (order in C<sub>D</sub>)</label>
+    <input id="mOrder" type="number" step="0.1" value="1.0" min="0.1" max="3">
+    <div></div>
+  </div>
+</div>
+
+<!-- Geometry & global rinsing parameters -->
+<div class="panel">
+  <div class="panel-title">Geometry, Plot Range & Rinse Physics</div>
+  <div class="controls-grid">
+    <label for="Vvessel">V<sub>vessel</sub> (volume of vessel, mL)</label>
+    <input id="Vvessel" type="number" step="10" value="250" min="1" max="100000">
+    <div></div>
+
+    <label for="NmaxPlot">N<sub>max,plot</sub> (max total steps on x-axis)</label>
+    <input id="NmaxPlot" type="number" step="1" value="20" min="1" max="300">
+    <div></div>
+
+    <label for="targetM">Target M<sub>*</sub> (optional, mg)</label>
+    <input id="targetM" type="number" step="0.000001" value="0.001" min="1e-12" max="1000">
+    <div></div>
+
+    <label>
+      <input id="useRinse" type="checkbox" checked>
+      Include rinse cycles (per recipe)
+    </label>
+    <div></div>
+    <div></div>
+
+    <label for="fhRinse">Rinse holdup fraction f<sub>h</sub></label>
+    <input id="fhRinse" type="number" step="0.001" value="0.02" min="0.0001" max="0.5">
+    <div></div>
+    <div></div>
+  </div>
+</div>
+
+<!-- Recipes -->
+<div class="panel">
+  <div class="panel-title">Recipe Definitions (per-case wash + rinse)</div>
+  <div class="controls-grid">
+    <!-- Case 1 -->
+    <label>
+      <input id="use1" type="checkbox" checked> Use Recipe 1
+    </label>
+    <div>Color: <span class="legend-box" style="background:#1f77b4;"></span></div>
+    <div></div>
+
+    <label for="CD1">Recipe 1: C<sub>D</sub> (g/L)</label>
+    <input id="CD1" type="number" step="0.1" value="5.0" min="0" max="20">
+    <div></div>
+
+    <label for="Vwash1">Recipe 1: V<sub>wash</sub> (mL)</label>
+    <input id="Vwash1" type="number" step="10" value="200" min="1" max="5000">
+    <div></div>
+
+    <label for="tStep1">Recipe 1: t<sub>step</sub> (wash, s)</label>
+    <input id="tStep1" type="number" step="10" value="600" min="1" max="36000">
+    <div></div>
+
+    <label for="Nwash1">Recipe 1: N<sub>wash</sub></label>
+    <input id="Nwash1" type="number" step="1" value="5" min="0" max="200">
+    <div></div>
+
+    <label for="Vrinse1">Recipe 1: V<sub>rinse</sub> (mL)</label>
+    <input id="Vrinse1" type="number" step="10" value="200" min="1" max="5000">
+    <div></div>
+
+    <label for="Nrinse1">Recipe 1: N<sub>rinse</sub></label>
+    <input id="Nrinse1" type="number" step="1" value="5" min="0" max="200">
+    <div></div>
+
+    <label for="tRinse1">Recipe 1: t<sub>rinse</sub> (s)</label>
+    <input id="tRinse1" type="number" step="5" value="30" min="1" max="36000">
+    <div></div>
+
+    <!-- Case 2 -->
+    <label>
+      <input id="use2" type="checkbox"> Use Recipe 2
+    </label>
+    <div>Color: <span class="legend-box" style="background:#d62728;"></span></div>
+    <div></div>
+
+    <label for="CD2">Recipe 2: C<sub>D</sub> (g/L)</label>
+    <input id="CD2" type="number" step="0.1" value="2.5" min="0" max="20">
+    <div></div>
+
+    <label for="Vwash2">Recipe 2: V<sub>wash</sub> (mL)</label>
+    <input id="Vwash2" type="number" step="10" value="150" min="1" max="5000">
+    <div></div>
+
+    <label for="tStep2">Recipe 2: t<sub>step</sub> (wash, s)</label>
+    <input id="tStep2" type="number" step="10" value="900" min="1" max="36000">
+    <div></div>
+
+    <label for="Nwash2">Recipe 2: N<sub>wash</sub></label>
+    <input id="Nwash2" type="number" step="1" value="6" min="0" max="200">
+    <div></div>
+
+    <label for="Vrinse2">Recipe 2: V<sub>rinse</sub> (mL)</label>
+    <input id="Vrinse2" type="number" step="10" value="200" min="1" max="5000">
+    <div></div>
+
+    <label for="Nrinse2">Recipe 2: N<sub>rinse</sub></label>
+    <input id="Nrinse2" type="number" step="1" value="4" min="0" max="200">
+    <div></div>
+
+    <label for="tRinse2">Recipe 2: t<sub>rinse</sub> (s)</label>
+    <input id="tRinse2" type="number" step="5" value="30" min="1" max="36000">
+    <div></div>
+
+    <!-- Case 3 -->
+    <label>
+      <input id="use3" type="checkbox"> Use Recipe 3
+    </label>
+    <div>Color: <span class="legend-box" style="background:#2ca02c;"></span></div>
+    <div></div>
+
+    <label for="CD3">Recipe 3: C<sub>D</sub> (g/L)</label>
+    <input id="CD3" type="number" step="0.1" value="8.0" min="0" max="20">
+    <div></div>
+
+    <label for="Vwash3">Recipe 3: V<sub>wash</sub> (mL)</label>
+    <input id="Vwash3" type="number" step="10" value="250" min="1" max="5000">
+    <div></div>
+
+    <label for="tStep3">Recipe 3: t<sub>step</sub> (wash, s)</label>
+    <input id="tStep3" type="number" step="10" value="300" min="1" max="36000">
+    <div></div>
+
+    <label for="Nwash3">Recipe 3: N<sub>wash</sub></label>
+    <input id="Nwash3" type="number" step="1" value="4" min="0" max="200">
+    <div></div>
+
+    <label for="Vrinse3">Recipe 3: V<sub>rinse</sub> (mL)</label>
+    <input id="Vrinse3" type="number" step="10" value="200" min="1" max="5000">
+    <div></div>
+
+    <label for="Nrinse3">Recipe 3: N<sub>rinse</sub></label>
+    <input id="Nrinse3" type="number" step="1" value="3" min="0" max="200">
+    <div></div>
+
+    <label for="tRinse3">Recipe 3: t<sub>rinse</sub> (s)</label>
+    <input id="tRinse3" type="number" step="5" value="30" min="1" max="36000">
+    <div></div>
+  </div>
+</div>
+
+<!-- Summary table -->
+<div class="panel">
+  <div class="panel-title">Per-Recipe Summary</div>
+  <table class="case-table">
+    <thead>
+      <tr>
+        <th>Recipe</th>
+        <th>Used?</th>
+        <th>C<sub>D</sub> (g/L)</th>
+        <th>V<sub>wash</sub> (mL)</th>
+        <th>t<sub>step</sub> (s)</th>
+        <th>N<sub>wash</sub></th>
+        <th>V<sub>rinse</sub> (mL)</th>
+        <th>N<sub>rinse</sub></th>
+        <th>t<sub>rinse</sub> (s)</th>
+        <th>k<sub>eff</sub> (1/s)</th>
+        <th>Steps (wash) to M<sub>*</sub> (ceil)</th>
+        <th>M after wash</th>
+        <th>M after wash+rinse</th>
+        <th>T<sub>total</sub> wash+rinse (s)</th>
+        <th>V<sub>total</sub> (mL)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Recipe 1</td>
+        <td id="r1Used"></td>
+        <td id="r1CD"></td>
+        <td id="r1Vw"></td>
+        <td id="r1t"></td>
+        <td id="r1Nw"></td>
+        <td id="r1Vr"></td>
+        <td id="r1Nr"></td>
+        <td id="r1Tr"></td>
+        <td id="r1ke"></td>
+        <td id="r1Nreq"></td>
+        <td id="r1Mw"></td>
+        <td id="r1Mr"></td>
+        <td id="r1Ttot"></td>
+        <td id="r1Vtot"></td>
+      </tr>
+      <tr>
+        <td>Recipe 2</td>
+        <td id="r2Used"></td>
+        <td id="r2CD"></td>
+        <td id="r2Vw"></td>
+        <td id="r2t"></td>
+        <td id="r2Nw"></td>
+        <td id="r2Vr"></td>
+        <td id="r2Nr"></td>
+        <td id="r2Tr"></td>
+        <td id="r2ke"></td>
+        <td id="r2Nreq"></td>
+        <td id="r2Mw"></td>
+        <td id="r2Mr"></td>
+        <td id="r2Ttot"></td>
+        <td id="r2Vtot"></td>
+      </tr>
+      <tr>
+        <td>Recipe 3</td>
+        <td id="r3Used"></td>
+        <td id="r3CD"></td>
+        <td id="r3Vw"></td>
+        <td id="r3t"></td>
+        <td id="r3Nw"></td>
+        <td id="r3Vr"></td>
+        <td id="r3Nr"></td>
+        <td id="r3Tr"></td>
+        <td id="r3ke"></td>
+        <td id="r3Nreq"></td>
+        <td id="r3Mw"></td>
+        <td id="r3Mr"></td>
+        <td id="r3Ttot"></td>
+        <td id="r3Vtot"></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Residue vs steps -->
+<div class="panel">
+  <div class="panel-title">
+    Residual Contaminant vs Total Steps (Wash + Rinse)
+    <div class="note">
+      <span class="legend-box" style="background:#1f77b4;"></span> Blue solid: Recipe 1
+      &nbsp;&nbsp;
+      <span class="legend-box" style="background:#d62728;"></span> Red solid: Recipe 2
+      &nbsp;&nbsp;
+      <span class="legend-box" style="background:#2ca02c;"></span> Green solid: Recipe 3
+      &nbsp;&nbsp;
+      <span style="border-bottom:2px dotted #aa0000; padding-bottom:2px;">Red dotted line</span> = Target M* (if defined).
+      <br>
+      For each recipe: steps 0…N<sub>wash</sub> = wash (ODE), 
+      N<sub>wash</sub>…N<sub>wash</sub>+N<sub>rinse</sub> = rinse (geometric ρ), then flat.
+    </div>
+  </div>
+  <canvas id="washCanvas" width="950" height="480"></canvas>
+</div>
+
+<!-- 2D Map -->
+<div class="panel">
+  <div class="panel-title">2D Map: Residue vs (C<sub>D</sub>, Wash Steps N)</div>
+  <div class="controls-grid">
+    <label for="tMap">t<sub>step,map</sub> (s, for map)</label>
+    <input id="tMap" type="number" step="10" value="600" min="1" max="36000">
+    <div></div>
+
+    <label for="VwashMap">V<sub>wash,map</sub> (mL, for map)</label>
+    <input id="VwashMap" type="number" step="10" value="200" min="1" max="100000">
+    <div></div>
+
+    <label for="CDmaxMap">C<sub>D,max,map</sub> (g/L)</label>
+    <input id="CDmaxMap" type="number" step="0.5" value="10.0" min="0.1" max="100">
+    <div></div>
+
+    <label for="NmaxMap">N<sub>max,map</sub> (max wash steps for map)</label>
+    <input id="NmaxMap" type="number" step="1" value="15" min="1" max="200">
+    <div></div>
+  </div>
+  <div class="note" style="margin-bottom:6px;">
+    Map uses the same M<sub>0</sub>, k<sub>0</sub>, k<sub>1</sub>, m, V<sub>vessel</sub> as global, 
+    but its own t<sub>step,map</sub>, V<sub>wash,map</sub>.<br>
+    Formula: M(n, C<sub>D</sub>) = M<sub>0</sub>·exp[-(k<sub>0</sub> + k<sub>1</sub>C<sub>D</sub><sup>m</sup> V<sub>wash,map</sub>/V<sub>vessel</sub>)·t<sub>step,map</sub>·n]
+  </div>
+
+  <div class="map-wrapper" id="mapWrapper">
+    <canvas id="mapCanvas" width="650" height="380"></canvas>
+    <div id="colorbarContainer">
+      <div id="colorbar"></div>
+      <div id="colorbarTicks">
+        <div id="cbMax">Ms max</div>
+        <div id="cbMid">Ms mid</div>
+        <div id="cbMin">Ms min</div>
+      </div>
+    </div>
+    <div id="mapTooltip"></div>
+  </div>
+</div>
+
+<script>
+// ---------- Core model functions ----------
+function kEff(CD, k0, k1, m, Vwash, Vvessel) {
+  if (Vvessel <= 0) return NaN;
+  return k0 + k1 * Math.pow(CD, m) * (Vwash / Vvessel);
+}
+function residueWash(M0, keff, tStep, n) {
+  return M0 * Math.exp(-keff * tStep * n);
+}
+function residueRinse(MwashEnd, rho, j) {
+  return MwashEnd * Math.pow(rho, j);
+}
+function val(id) {
+  const el = document.getElementById(id);
+  if (!el) return NaN;
+  if (el.type === "checkbox") return el.checked;
+  return parseFloat(el.value);
+}
+
+// ---------- Canvas helpers ----------
+function clearCanvas(ctx, canvas) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+function drawAxes(ctx, canvas, xMin, xMax, yMin, yMax, xLabel, yLabel, logY=false) {
+  const paddingLeft = 75;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 50;
+
+  const plotWidth = canvas.width - paddingLeft - paddingRight;
+  const plotHeight = canvas.height - paddingTop - paddingBottom;
+
+  const fg = getComputedStyle(document.body).getPropertyValue('--fg');
+
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(paddingLeft, canvas.height - paddingBottom);
+  ctx.lineTo(canvas.width - paddingRight, canvas.height - paddingBottom);
+  ctx.moveTo(paddingLeft, canvas.height - paddingBottom);
+  ctx.lineTo(paddingLeft, paddingTop);
+  ctx.stroke();
+
+  ctx.font = "12px Arial";
+  ctx.fillStyle = fg;
+  ctx.textAlign = "center";
+  ctx.fillText(xLabel, paddingLeft + plotWidth / 2, canvas.height - 15);
+
+  ctx.save();
+  ctx.translate(22, paddingTop + plotHeight / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  const xTicks = Math.max(5, Math.min(15, Math.floor((xMax - xMin) / 2)));
+  for (let i = 0; i <= xTicks; i++) {
+    const xVal = xMin + (i / xTicks) * (xMax - xMin);
+    const xPix = paddingLeft + (i / xTicks) * plotWidth;
+    ctx.beginPath();
+    ctx.moveTo(xPix, canvas.height - paddingBottom);
+    ctx.lineTo(xPix, canvas.height - paddingBottom + 4);
+    ctx.stroke();
+    ctx.fillText(xVal.toFixed(0), xPix, canvas.height - paddingBottom + 6);
+  }
+
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+
+  if (!logY) {
+    const yTicks = 5;
+    for (let i = 0; i <= yTicks; i++) {
+      const yVal = yMin + (i / yTicks) * (yMax - yMin);
+      const yPix = canvas.height - paddingBottom - (i / yTicks) * plotHeight;
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft - 4, yPix);
+      ctx.lineTo(paddingLeft, yPix);
+      ctx.stroke();
+      ctx.fillText(yVal.toPrecision(3), paddingLeft - 6, yPix);
+    }
+  } else {
+    const expMin = Math.floor(Math.log10(yMin));
+    const expMax = Math.ceil(Math.log10(yMax));
+    for (let e = expMin; e <= expMax; e++) {
+      const yVal = Math.pow(10, e);
+      if (yVal < yMin || yVal > yMax) continue;
+      const frac = (Math.log10(yVal) - Math.log10(yMin)) / (Math.log10(yMax) - Math.log10(yMin));
+      const yPix = canvas.height - paddingBottom - frac * plotHeight;
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft - 4, yPix);
+      ctx.lineTo(paddingLeft, yPix);
+      ctx.stroke();
+      ctx.fillText("1e" + e, paddingLeft - 6, yPix);
+    }
+  }
+
+  function xToPix(x) {
+    return paddingLeft + (x - xMin) / (xMax - xMin) * plotWidth;
+  }
+  function yToPixLinear(y) {
+    return canvas.height - paddingBottom - (y - yMin) / (yMax - yMin) * plotHeight;
+  }
+  function yToPixLog(y) {
+    const lyMin = Math.log10(yMin);
+    const lyMax = Math.log10(yMax);
+    const ly = Math.log10(y);
+    const frac = (ly - lyMin) / (lyMax - lyMin);
+    return canvas.height - paddingBottom - frac * plotHeight;
+  }
+
+  return {
+    xToPix,
+    yToPix: logY ? yToPixLog : yToPixLinear,
+    paddingLeft,
+    paddingRight,
+    paddingTop,
+    paddingBottom,
+    plotWidth,
+    plotHeight
+  };
+}
+
+// state for map hover
+let mapState = null;
+
+// ---------- Main recompute & redraw ----------
+function recomputeAndDraw() {
+  const M0 = val("MS0");
+  const k0 = val("k0");
+  const k1 = val("k1");
+  const m = val("mOrder");
+  const Vvessel = val("Vvessel");
+  const NmaxPlot = Math.max(1, Math.floor(val("NmaxPlot")));
+  const targetM = val("targetM");
+  const useRinse = val("useRinse");
+  const fhRinse = val("fhRinse");
+  const rhoRinse = fhRinse > 0 ? fhRinse / (1 + fhRinse) : 1.0;
+
+  const recipes = [
+    {
+      use: val("use1"),
+      CD: val("CD1"),
+      Vwash: val("Vwash1"),
+      tStep: val("tStep1"),
+      Nwash: Math.max(0, Math.floor(val("Nwash1"))),
+      Vrinse: val("Vrinse1"),
+      Nrinse: Math.max(0, Math.floor(val("Nrinse1"))),
+      tRinse: val("tRinse1"),
+      color: "#1f77b4",
+      ids: {
+        used:"r1Used", CD:"r1CD", Vw:"r1Vw", t:"r1t", Nw:"r1Nw",
+        Vr:"r1Vr", Nr:"r1Nr", Tr:"r1Tr", ke:"r1ke", Nreq:"r1Nreq",
+        Mw:"r1Mw", Mr:"r1Mr", Ttot:"r1Ttot", Vtot:"r1Vtot"
+      }
+    },
+    {
+      use: val("use2"),
+      CD: val("CD2"),
+      Vwash: val("Vwash2"),
+      tStep: val("tStep2"),
+      Nwash: Math.max(0, Math.floor(val("Nwash2"))),
+      Vrinse: val("Vrinse2"),
+      Nrinse: Math.max(0, Math.floor(val("Nrinse2"))),
+      tRinse: val("tRinse2"),
+      color: "#d62728",
+      ids: {
+        used:"r2Used", CD:"r2CD", Vw:"r2Vw", t:"r2t", Nw:"r2Nw",
+        Vr:"r2Vr", Nr:"r2Nr", Tr:"r2Tr", ke:"r2ke", Nreq:"r2Nreq",
+        Mw:"r2Mw", Mr:"r2Mr", Ttot:"r2Ttot", Vtot:"r2Vtot"
+      }
+    },
+    {
+      use: val("use3"),
+      CD: val("CD3"),
+      Vwash: val("Vwash3"),
+      tStep: val("tStep3"),
+      Nwash: Math.max(0, Math.floor(val("Nwash3"))),
+      Vrinse: val("Vrinse3"),
+      Nrinse: Math.max(0, Math.floor(val("Nrinse3"))),
+      tRinse: val("tRinse3"),
+      color: "#2ca02c",
+      ids: {
+        used:"r3Used", CD:"r3CD", Vw:"r3Vw", t:"r3t", Nw:"r3Nw",
+        Vr:"r3Vr", Nr:"r3Nr", Tr:"r3Tr", ke:"r3ke", Nreq:"r3Nreq",
+        Mw:"r3Mw", Mr:"r3Mr", Ttot:"r3Ttot", Vtot:"r3Vtot"
+      }
+    }
+  ];
+
+  const washCanvas = document.getElementById("washCanvas");
+  const wctx = washCanvas.getContext("2d");
+  clearCanvas(wctx, washCanvas);
+
+  const anyValidM0 = (M0 > 0 && isFinite(M0));
+
+  let allResidues = [];
+  let anyUsed = false;
+  let curves = []; // {color, steps:[{step,M}], Nwash, Nrinse}
+
+  recipes.forEach((r) => {
+    const id = r.ids;
+    document.getElementById(id.used).textContent = r.use ? "Yes" : "No";
+    document.getElementById(id.CD).textContent = isFinite(r.CD) ? r.CD.toFixed(3) : "-";
+    document.getElementById(id.Vw).textContent = isFinite(r.Vwash) ? r.Vwash.toFixed(1) : "-";
+    document.getElementById(id.t).textContent = isFinite(r.tStep) ? r.tStep.toFixed(1) : "-";
+    document.getElementById(id.Nw).textContent = r.Nwash.toString();
+    document.getElementById(id.Vr).textContent = isFinite(r.Vrinse) ? r.Vrinse.toFixed(1) : "-";
+    document.getElementById(id.Nr).textContent = r.Nrinse.toString();
+    document.getElementById(id.Tr).textContent = isFinite(r.tRinse) ? r.tRinse.toFixed(1) : "-";
+
+    if (!r.use || !anyValidM0 || !isFinite(k0) || !isFinite(k1) || !isFinite(m) || !isFinite(Vvessel) ||
+        r.CD < 0 || r.Vwash <= 0 || r.tStep <= 0 || !isFinite(r.Vrinse) || r.Vrinse <= 0 ||
+        !isFinite(r.tRinse) || r.tRinse <= 0) {
+      document.getElementById(id.ke).textContent = "-";
+      document.getElementById(id.Nreq).textContent = "-";
+      document.getElementById(id.Mw).textContent = "-";
+      document.getElementById(id.Mr).textContent = "-";
+      document.getElementById(id.Ttot).textContent = "-";
+      document.getElementById(id.Vtot).textContent = "-";
+      return;
+    }
+
+    anyUsed = true;
+
+    const keff = kEff(r.CD, k0, k1, m, r.Vwash, Vvessel);
+    document.getElementById(id.ke).textContent = isFinite(keff) ? keff.toExponential(3) : "NaN";
+
+    let NreqWash = "n/a";
+    if (isFinite(targetM) && targetM > 0 && targetM < M0 && keff > 0) {
+      const raw = Math.log(M0 / targetM) / (keff * r.tStep);
+      const ceilVal = raw > 0 ? Math.ceil(raw) : 0;
+      NreqWash = ceilVal.toString() + " (raw " + raw.toFixed(3) + ")";
+    }
+    document.getElementById(id.Nreq).textContent = NreqWash;
+
+    const MwEnd = (keff > 0 && r.Nwash > 0)
+      ? residueWash(M0, keff, r.tStep, r.Nwash)
+      : M0;
+    document.getElementById(id.Mw).textContent = MwEnd.toPrecision(3);
+
+    let MrEnd = MwEnd;
+    if (useRinse && r.Nrinse > 0 && rhoRinse > 0 && rhoRinse < 1) {
+      MrEnd = residueRinse(MwEnd, rhoRinse, r.Nrinse);
+    }
+    document.getElementById(id.Mr).textContent = MrEnd.toPrecision(3);
+
+    const totalTime = r.Nwash * r.tStep + (useRinse ? r.Nrinse * r.tRinse : 0);
+    const totalVol = r.Nwash * r.Vwash + (useRinse ? r.Nrinse * r.Vrinse : 0);
+    document.getElementById(id.Ttot).textContent = totalTime.toFixed(1);
+    document.getElementById(id.Vtot).textContent = totalVol.toFixed(1);
+
+    let stepsArr = [];
+    for (let s = 0; s <= NmaxPlot; s++) {
+      let Mcur;
+      if (s <= r.Nwash) {
+        Mcur = residueWash(M0, keff, r.tStep, s);
+      } else {
+        const j = s - r.Nwash;
+        if (useRinse && j > 0 && j <= r.Nrinse && rhoRinse > 0 && rhoRinse < 1) {
+          Mcur = residueRinse(MwEnd, rhoRinse, j);
+        } else {
+          Mcur = MrEnd;
+        }
+      }
+      stepsArr.push({ step: s, M: Mcur });
+      allResidues.push(Mcur);
+    }
+    curves.push({ color: r.color, steps: stepsArr, Nwash: r.Nwash, Nrinse: r.Nrinse });
+  });
+
+  const fg = getComputedStyle(document.body).getPropertyValue('--fg');
+
+  if (!anyUsed) {
+    wctx.font = "14px Arial";
+    wctx.fillStyle = fg;
+    wctx.fillText("Select at least one recipe with valid parameters.", 30, 40);
+  } else {
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    allResidues.forEach(v => {
+      if (v < yMin) yMin = v;
+      if (v > yMax) yMax = v;
+    });
+    if (isFinite(targetM) && targetM > 0) {
+      if (targetM < yMin) yMin = targetM;
+      if (targetM > yMax) yMax = targetM;
+    }
+    if (!isFinite(yMin) || !isFinite(yMax) || yMin <= 0) {
+      yMin = yMax / 1000;
+    }
+    if (yMin === yMax) yMax = yMin * 10;
+
+    const axes = drawAxes(
+      wctx,
+      washCanvas,
+      0,
+      NmaxPlot,
+      yMin,
+      yMax,
+      "Total step index (wash + rinse)",
+      "Residual contaminant M (mg)",
+      true
+    );
+
+    curves.forEach(c => {
+      wctx.beginPath();
+      wctx.strokeStyle = c.color;
+      wctx.lineWidth = 2;
+      c.steps.forEach((p, idx) => {
+        const x = axes.xToPix(p.step);
+        const y = axes.yToPix(p.M);
+        if (idx === 0) wctx.moveTo(x, y);
+        else wctx.lineTo(x, y);
+      });
+      wctx.stroke();
+
+      // vertical line at end of wash
+      if (c.Nwash > 0 && c.Nwash <= NmaxPlot) {
+        wctx.setLineDash([6,4]);
+        wctx.strokeStyle = c.color;
+        wctx.lineWidth = 1.2;
+        const xline = axes.xToPix(c.Nwash);
+        wctx.beginPath();
+        wctx.moveTo(xline, axes.yToPix(yMin));
+        wctx.lineTo(xline, axes.yToPix(yMax));
+        wctx.stroke();
+        wctx.setLineDash([]);
+      }
+    });
+
+    if (isFinite(targetM) && targetM > 0 && targetM < yMax) {
+      wctx.setLineDash([6,4]);
+      wctx.strokeStyle = "#aa0000";
+      wctx.lineWidth = 1.5;
+      const yT = axes.yToPix(targetM);
+      wctx.beginPath();
+      wctx.moveTo(axes.xToPix(0), yT);
+      wctx.lineTo(axes.xToPix(NmaxPlot), yT);
+      wctx.stroke();
+      wctx.setLineDash([]);
+
+      wctx.fillStyle = "#aa0000";
+      wctx.font = "11px Arial";
+      wctx.textAlign = "left";
+      wctx.fillText("Target M*", axes.xToPix(0) + 5, yT - 5);
+    }
+
+    wctx.font = "11px Arial";
+    wctx.fillStyle = fg;
+    wctx.textAlign = "left";
+    wctx.fillText("ρ_rinse = fh/(1+fh) = " + rhoRinse.toPrecision(3), 10, 18);
+    wctx.fillText("N_rinse & t_rinse are per recipe (see table).", 10, 34);
+  }
+
+  // ---------- 2D Map (wash only) ----------
+  const mapCanvas = document.getElementById("mapCanvas");
+  const mctx = mapCanvas.getContext("2d");
+  clearCanvas(mctx, mapCanvas);
+
+  const tMap = val("tMap");
+  const VwashMap = val("VwashMap");
+  const CDmaxMap = val("CDmaxMap");
+  const NmaxMap = Math.max(1, Math.floor(val("NmaxMap")));
+
+  let mapGrid = [];
+  let valMin = Infinity;
+  let valMax = -Infinity;
+
+  const fgMap = fg;
+
+  if (!anyValidM0 || !isFinite(k0) || !isFinite(k1) || !isFinite(m) || !isFinite(Vvessel) ||
+      !isFinite(tMap) || tMap <= 0 || !isFinite(VwashMap) || VwashMap <= 0 ||
+      !isFinite(CDmaxMap) || CDmaxMap <= 0) {
+
+    mctx.font = "14px Arial";
+    mctx.fillStyle = fgMap;
+    mctx.fillText("Map not defined (check global + map parameters).", 30, 40);
+    document.getElementById("colorbarContainer").style.display = "none";
+    mapState = null;
+
+  } else {
+    const Ny = 40;
+    const Nx = NmaxMap;
+
+    for (let iy = 0; iy < Ny; iy++) {
+      const CD = (CDmaxMap * iy) / (Ny - 1);
+      const ke = kEff(CD, k0, k1, m, VwashMap, Vvessel);
+      let row = [];
+      for (let ix = 0; ix <= Nx; ix++) {
+        const n = ix;
+        const ms = (ke > 0) ? residueWash(M0, ke, tMap, n) : M0;
+        row.push({ CD, n, ms });
+        if (ms < valMin) valMin = ms;
+        if (ms > valMax) valMax = ms;
+      }
+      mapGrid.push(row);
+    }
+
+    const colorbarContainer = document.getElementById("colorbarContainer");
+    const cbMax = document.getElementById("cbMax");
+    const cbMid = document.getElementById("cbMid");
+    const cbMin = document.getElementById("cbMin");
+
+    if (!isFinite(valMin) || !isFinite(valMax) || valMin <= 0 || valMin === valMax) {
+      mctx.font = "14px Arial";
+      mctx.fillStyle = fgMap;
+      mctx.fillText("Map values degenerate (check parameters).", 30, 40);
+      colorbarContainer.style.display = "none";
+      mapState = null;
+    } else {
+      colorbarContainer.style.display = "flex";
+
+      const xMin = 0;
+      const xMax = NmaxMap;
+      const yMin = 0;
+      const yMax = CDmaxMap;
+
+      const axesM = drawAxes(
+        mctx,
+        mapCanvas,
+        xMin,
+        xMax,
+        yMin,
+        yMax,
+        "Wash steps n",
+        "C_D (g/L)",
+        false
+      );
+      const xToPix = axesM.xToPix;
+      const yToPix = axesM.yToPix;
+
+      function msToColor(ms) {
+        const t = (ms - valMin) / (valMax - valMin);
+        const tClamped = Math.max(0, Math.min(1, t));
+        const hue = 240 * (1 - tClamped); // blue->red
+        return "hsl(" + hue + ", 100%, 50%)";
+      }
+
+      const NyCells = Ny - 1;
+      for (let iy = 0; iy < NyCells; iy++) {
+        for (let ix = 0; ix < Nx; ix++) {
+          const cell = mapGrid[iy][ix];
+          const cellRight = mapGrid[iy][ix + 1];
+          const cellTop = mapGrid[iy + 1][ix];
+
+          const msCell = cell.ms;
+          mctx.fillStyle = msToColor(msCell);
+
+          const xLeft = xToPix(cell.n);
+          const xRight = xToPix(cellRight.n);
+          const yBottom = yToPix(cell.CD);
+          const yTop = yToPix(cellTop.CD);
+
+          const x = xLeft;
+          const y = Math.min(yTop, yBottom);
+          const w = xRight - xLeft;
+          const h = Math.abs(yBottom - yTop);
+
+          mctx.fillRect(x, y, w, h);
+        }
+      }
+
+      const midVal = 0.5 * (valMin + valMax);
+      cbMax.textContent = "Ms max ≈ " + valMax.toPrecision(3);
+      cbMid.textContent = "Ms mid ≈ " + midVal.toPrecision(3);
+      cbMin.textContent = "Ms min ≈ " + valMin.toPrecision(3);
+
+      mapState = {
+        axesM,
+        xMin, xMax,
+        yMin, yMax,
+        grid: mapGrid,
+        Nx,
+        Ny,
+        valMin,
+        valMax
+      };
+    }
+  }
+}
+
+// ---------- Dark mode & downloads ----------
+function toggleDarkMode() {
+  document.body.classList.toggle("dark");
+  recomputeAndDraw();
+}
+function downloadCanvasAsPNG(canvasId, filename) {
+  const canvas = document.getElementById(canvasId);
+  const link = document.createElement("a");
+  link.href = canvas.toDataURL("image/png");
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// ---------- Map hover tooltip ----------
+function setupMapHover() {
+  const mapCanvas = document.getElementById("mapCanvas");
+  const mapWrapper = document.getElementById("mapWrapper");
+  const tooltip = document.getElementById("mapTooltip");
+
+  mapCanvas.addEventListener("mousemove", (evt) => {
+    if (!mapState) {
+      tooltip.style.display = "none";
+      return;
+    }
+    const rectCanvas = mapCanvas.getBoundingClientRect();
+    const rectWrapper = mapWrapper.getBoundingClientRect();
+    const xCanvas = evt.clientX - rectCanvas.left;
+    const yCanvas = evt.clientY - rectCanvas.top;
+    const xWrapper = evt.clientX - rectWrapper.left;
+    const yWrapper = evt.clientY - rectWrapper.top;
+
+    const { axesM, xMin, xMax, yMin, yMax, grid, Nx, Ny } = mapState;
+    const paddingLeft = axesM.paddingLeft;
+    const paddingRight = axesM.paddingRight;
+    const paddingTop = axesM.paddingTop;
+    const paddingBottom = axesM.paddingBottom;
+    const plotWidth = axesM.plotWidth;
+    const plotHeight = axesM.plotHeight;
+
+    if (
+      xCanvas < paddingLeft ||
+      xCanvas > mapCanvas.width - paddingRight ||
+      yCanvas < paddingTop ||
+      yCanvas > mapCanvas.height - paddingBottom
+    ) {
+      tooltip.style.display = "none";
+      return;
+    }
+
+    const nFloat = xMin + (xCanvas - paddingLeft) / plotWidth * (xMax - xMin);
+    const cDFloat = yMin + (mapCanvas.height - paddingBottom - yCanvas) / plotHeight * (yMax - yMin);
+
+    let ix = Math.round((nFloat - xMin) / (xMax - xMin) * Nx);
+    let iy = Math.round((cDFloat - yMin) / (yMax - yMin) * (Ny - 1));
+    ix = Math.max(0, Math.min(Nx, ix));
+    iy = Math.max(0, Math.min(Ny - 1, iy));
+
+    const cell = grid[iy][ix];
+    if (!cell) {
+      tooltip.style.display = "none";
+      return;
+    }
+
+    const n = cell.n;
+    const CD = cell.CD;
+    const ms = cell.ms;
+
+    tooltip.style.display = "block";
+    tooltip.style.left = (xWrapper + 10) + "px";
+    tooltip.style.top = (yWrapper + 10) + "px";
+    tooltip.innerHTML =
+      "n = " + n.toFixed(0) + "<br>" +
+      "C<sub>D</sub> = " + CD.toFixed(2) + " g/L<br>" +
+      "M<sub>S</sub> ≈ " + ms.toPrecision(3) + " mg";
+  });
+
+  mapCanvas.addEventListener("mouseleave", () => {
+    const tooltip = document.getElementById("mapTooltip");
+    tooltip.style.display = "none";
+  });
+}
+
+// ---------- Init ----------
+window.addEventListener("load", () => {
+  const ids = [
+    "MS0","k0","k1","mOrder",
+    "Vvessel","NmaxPlot","targetM",
+    "useRinse","fhRinse",
+    "use1","CD1","Vwash1","tStep1","Nwash1","Vrinse1","Nrinse1","tRinse1",
+    "use2","CD2","Vwash2","tStep2","Nwash2","Vrinse2","Nrinse2","tRinse2",
+    "use3","CD3","Vwash3","tStep3","Nwash3","Vrinse3","Nrinse3","tRinse3",
+    "tMap","VwashMap","CDmaxMap","NmaxMap"
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", recomputeAndDraw);
+    el.addEventListener("change", recomputeAndDraw);
+  });
+
+  document.getElementById("darkToggle").addEventListener("click", toggleDarkMode);
+  document.getElementById("downloadWashBtn").addEventListener("click", () => {
+    downloadCanvasAsPNG("washCanvas", "residual_vs_steps_multirecipe.png");
+  });
+  document.getElementById("downloadMapBtn").addEventListener("click", () => {
+    downloadCanvasAsPNG("mapCanvas", "residual_map_CD_vs_N.png");
+  });
+
+  setupMapHover();
+  recomputeAndDraw();
+});
+</script>
+</body>
+</html>
